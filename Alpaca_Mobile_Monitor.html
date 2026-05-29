@@ -1,0 +1,623 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>Alpaca Monitor</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=DM+Sans:wght@300;400;500;600&display=swap');
+
+  :root {
+    --bg: #0a0e1a;
+    --surface: #111827;
+    --surface2: #1a2235;
+    --border: #1f2d45;
+    --green: #00e676;
+    --red: #ff4757;
+    --blue: #4fc3f7;
+    --yellow: #ffd740;
+    --text: #e2e8f0;
+    --muted: #64748b;
+    --mono: 'Space Mono', monospace;
+    --sans: 'DM Sans', sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    padding: 16px;
+    padding-bottom: 40px;
+  }
+
+  /* Header */
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding-bottom: 16px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .logo-dot {
+    width: 9px; height: 9px;
+    border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 10px var(--green);
+    animation: pulse 2s infinite;
+  }
+
+  @keyframes pulse {
+    0%,100% { opacity:1; transform:scale(1); }
+    50% { opacity:0.5; transform:scale(0.7); }
+  }
+
+  .logo h1 {
+    font-family: var(--mono);
+    font-size: 13px;
+    letter-spacing: 0.05em;
+  }
+
+  .badge {
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 20px;
+    background: rgba(0,230,118,0.1);
+    color: var(--green);
+    border: 1px solid rgba(0,230,118,0.2);
+  }
+
+  .refresh-btn {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--blue);
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    cursor: pointer;
+    font-family: var(--sans);
+    font-weight: 500;
+  }
+
+  #last-update {
+    font-size: 11px;
+    color: var(--muted);
+    font-family: var(--mono);
+    text-align: center;
+    margin-bottom: 16px;
+  }
+
+  /* Metrics grid */
+  .metrics {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+    margin-bottom: 16px;
+  }
+
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px 16px;
+  }
+
+  .metric-card.full {
+    grid-column: 1 / -1;
+  }
+
+  .metric-label {
+    font-size: 11px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+    margin-bottom: 6px;
+  }
+
+  .metric-value {
+    font-family: var(--mono);
+    font-size: 22px;
+    font-weight: 700;
+  }
+
+  .metric-value.up { color: var(--green); }
+  .metric-value.down { color: var(--red); }
+  .metric-value.big {
+    font-size: 28px;
+  }
+
+  /* Section */
+  .section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    margin-bottom: 14px;
+    overflow: hidden;
+  }
+
+  .section-header {
+    padding: 13px 16px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .section-title {
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+
+  .count-badge {
+    font-family: var(--mono);
+    font-size: 11px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--blue);
+    padding: 2px 8px;
+    border-radius: 10px;
+  }
+
+  /* Position cards */
+  .position-card {
+    padding: 14px 16px;
+    border-bottom: 1px solid rgba(31,45,69,0.5);
+  }
+  .position-card:last-child { border-bottom: none; }
+
+  .pos-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+
+  .pos-symbol {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 700;
+    color: var(--blue);
+  }
+
+  .pos-qty {
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  .pos-pnl {
+    text-align: right;
+  }
+
+  .pos-pnl-val {
+    font-family: var(--mono);
+    font-size: 18px;
+    font-weight: 700;
+  }
+
+  .pos-pnl-pct {
+    font-size: 13px;
+    margin-top: 2px;
+  }
+
+  .pos-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 8px;
+  }
+
+  .pos-stat {
+    background: var(--surface2);
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+
+  .pos-stat-label {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 4px;
+  }
+
+  .pos-stat-val {
+    font-family: var(--mono);
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  /* Progress bar for trailing stop */
+  .trail-bar-wrap {
+    margin-top: 10px;
+  }
+
+  .trail-bar-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 11px;
+    color: var(--muted);
+    margin-bottom: 5px;
+  }
+
+  .trail-bar-bg {
+    background: var(--surface2);
+    border-radius: 4px;
+    height: 6px;
+    overflow: hidden;
+  }
+
+  .trail-bar-fill {
+    height: 100%;
+    border-radius: 4px;
+    background: linear-gradient(90deg, var(--red), var(--yellow), var(--green));
+    transition: width 0.5s ease;
+  }
+
+  /* Order rows */
+  .order-row {
+    padding: 12px 16px;
+    border-bottom: 1px solid rgba(31,45,69,0.5);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .order-row:last-child { border-bottom: none; }
+
+  .order-sym {
+    font-family: var(--mono);
+    font-size: 15px;
+    font-weight: 700;
+    color: var(--blue);
+  }
+
+  .order-detail {
+    font-size: 12px;
+    color: var(--muted);
+    margin-top: 2px;
+  }
+
+  .tag {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .tag-buy { background: rgba(0,230,118,0.12); color: var(--green); border: 1px solid rgba(0,230,118,0.2); }
+  .tag-sell { background: rgba(255,71,87,0.12); color: var(--red); border: 1px solid rgba(255,71,87,0.2); }
+  .tag-pending { background: rgba(255,215,64,0.12); color: var(--yellow); border: 1px solid rgba(255,215,64,0.2); }
+
+  .up { color: var(--green); }
+  .down { color: var(--red); }
+
+  .empty {
+    padding: 28px 16px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 13px;
+  }
+
+  /* Auto-refresh indicator */
+  .auto-refresh {
+    text-align: center;
+    font-size: 11px;
+    color: var(--muted);
+    font-family: var(--mono);
+    margin-top: 8px;
+  }
+
+  .countdown {
+    color: var(--blue);
+  }
+
+  /* Loading spinner */
+  .spinner {
+    display: inline-block;
+    width: 16px; height: 16px;
+    border: 2px solid var(--border);
+    border-top-color: var(--blue);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    vertical-align: middle;
+    margin-right: 6px;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  /* Error banner */
+  .error-banner {
+    background: rgba(255,71,87,0.1);
+    border: 1px solid rgba(255,71,87,0.3);
+    color: var(--red);
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 13px;
+    margin-bottom: 14px;
+    display: none;
+    font-family: var(--mono);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">
+    <div class="logo-dot"></div>
+    <div>
+      <h1>ALPACA</h1>
+    </div>
+    <span class="badge">PAPER</span>
+  </div>
+  <button class="refresh-btn" onclick="loadAll()">↻ Refresh</button>
+</header>
+
+<div id="last-update">Connecting...</div>
+<div class="error-banner" id="error-banner"></div>
+
+<!-- Portfolio metrics -->
+<div class="metrics">
+  <div class="metric-card full">
+    <div class="metric-label">Portfolio Value</div>
+    <div class="metric-value big" id="m-portfolio">—</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">Today's P&L</div>
+    <div class="metric-value" id="m-pnl">—</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">Cash</div>
+    <div class="metric-value" id="m-cash">—</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">Buying Power</div>
+    <div class="metric-value" id="m-buying">—</div>
+  </div>
+  <div class="metric-card">
+    <div class="metric-label">Equity</div>
+    <div class="metric-value" id="m-equity">—</div>
+  </div>
+</div>
+
+<!-- Positions -->
+<div class="section">
+  <div class="section-header">
+    <span class="section-title">Open Positions</span>
+    <span class="count-badge" id="pos-count">0</span>
+  </div>
+  <div id="positions-body">
+    <div class="empty"><span class="spinner"></span> Loading...</div>
+  </div>
+</div>
+
+<!-- Open Orders -->
+<div class="section">
+  <div class="section-header">
+    <span class="section-title">Open Orders</span>
+    <span class="count-badge" id="ord-count">0</span>
+  </div>
+  <div id="orders-body">
+    <div class="empty"><span class="spinner"></span> Loading...</div>
+  </div>
+</div>
+
+<!-- Recent History -->
+<div class="section">
+  <div class="section-header">
+    <span class="section-title">Recent History</span>
+    <span class="count-badge" id="hist-count">0</span>
+  </div>
+  <div id="history-body">
+    <div class="empty"><span class="spinner"></span> Loading...</div>
+  </div>
+</div>
+
+<div class="auto-refresh">Auto-refreshes in <span class="countdown" id="countdown">30</span>s</div>
+
+<script>
+const BASE   = 'https://paper-api.alpaca.markets/v2';
+const KEY    = 'PKU5QMNFEIOU3IADPFWIF6757X';
+const SECRET = '742uHsp9duDJLgHH6GZzjLpT7WYJNZGZP3eGUWuXjgKF';
+const H      = { 'APCA-API-KEY-ID': KEY, 'APCA-API-SECRET-KEY': SECRET };
+
+let countdownVal = 30;
+
+function fmt(n) {
+  return '$' + parseFloat(n).toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function sign(n) { return parseFloat(n) >= 0 ? '+' : ''; }
+function col(n)  { return parseFloat(n) >= 0 ? 'up' : 'down'; }
+
+function showError(msg) {
+  const el = document.getElementById('error-banner');
+  el.style.display = 'block';
+  el.textContent = '⚠ ' + msg;
+}
+
+function hideError() {
+  document.getElementById('error-banner').style.display = 'none';
+}
+
+async function loadAccount() {
+  const r = await fetch(`${BASE}/account`, {headers: H});
+  if (!r.ok) throw new Error(`Auth failed (${r.status})`);
+  const d = await r.json();
+
+  document.getElementById('m-portfolio').textContent = fmt(d.portfolio_value);
+  document.getElementById('m-cash').textContent      = fmt(d.cash);
+  document.getElementById('m-buying').textContent    = fmt(d.buying_power);
+  document.getElementById('m-equity').textContent    = fmt(d.equity);
+
+  const pnl = parseFloat(d.equity) - parseFloat(d.last_equity);
+  const pe  = document.getElementById('m-pnl');
+  pe.textContent  = sign(pnl) + fmt(pnl);
+  pe.className    = 'metric-value ' + col(pnl);
+}
+
+async function loadPositions() {
+  const r  = await fetch(`${BASE}/positions`, {headers: H});
+  const ps = await r.json();
+  document.getElementById('pos-count').textContent = ps.length;
+
+  if (!ps.length) {
+    document.getElementById('positions-body').innerHTML = '<div class="empty">No open positions</div>';
+    return;
+  }
+
+  document.getElementById('positions-body').innerHTML = ps.map(p => {
+    const pl     = parseFloat(p.unrealized_pl);
+    const plPct  = parseFloat(p.unrealized_plpc) * 100;
+    const entry  = parseFloat(p.avg_entry_price);
+    const curr   = parseFloat(p.current_price);
+    const trailPct = ['NVDA','AMD','META'].includes(p.symbol) ? 0.08 : ['SPY','QQQ'].includes(p.symbol) ? 0.04 : 0.05;
+    // Use highest of: current price, entry price, or implied high from unrealized P&L
+    // Best estimate of true high without agent memory
+    const impliedHigh = curr > entry ? curr : entry;
+    const high = impliedHigh;
+    const trailStop = high * (1 - trailPct);
+    const hardStop  = entry * (1 - trailPct); // initial stop loss at entry
+
+    // Show the higher of trailing stop vs hard stop
+    const effectiveStop = Math.max(trailStop, hardStop);
+
+    // Progress bar: where is current price between stop and +10% target
+    const stopPrice   = effectiveStop;
+    const targetPrice = entry * 1.10;
+    const barPct      = Math.min(100, Math.max(0, ((curr - stopPrice) / (targetPrice - stopPrice)) * 100));
+
+    return `<div class="position-card">
+      <div class="pos-top">
+        <div>
+          <div class="pos-symbol">${p.symbol}</div>
+          <div class="pos-qty">${p.qty} shares</div>
+        </div>
+        <div class="pos-pnl">
+          <div class="pos-pnl-val ${col(pl)}">${sign(pl)}${fmt(pl)}</div>
+          <div class="pos-pnl-pct ${col(plPct)}">${sign(plPct)}${plPct.toFixed(2)}%</div>
+        </div>
+      </div>
+      <div class="pos-grid">
+        <div class="pos-stat">
+          <div class="pos-stat-label">Entry</div>
+          <div class="pos-stat-val">$${entry.toFixed(2)}</div>
+        </div>
+        <div class="pos-stat">
+          <div class="pos-stat-label">Current</div>
+          <div class="pos-stat-val">$${curr.toFixed(2)}</div>
+        </div>
+        <div class="pos-stat">
+          <div class="pos-stat-label">Value</div>
+          <div class="pos-stat-val">${fmt(p.market_value)}</div>
+        </div>
+      </div>
+      <div class="trail-bar-wrap">
+        <div class="trail-bar-label">
+          <span>Stop $${effectiveStop.toFixed(2)}</span>
+          <span style="color:var(--blue)">▼ Trailing ${(trailPct*100).toFixed(0)}%</span>
+          <span>Target $${(entry*1.10).toFixed(2)}</span>
+        </div>
+        <div class="trail-bar-bg">
+          <div class="trail-bar-fill" style="width:${barPct}%"></div>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function loadOrders() {
+  const r  = await fetch(`${BASE}/orders?status=open&limit=10`, {headers: H});
+  const os = await r.json();
+  document.getElementById('ord-count').textContent = os.length;
+
+  if (!os.length) {
+    document.getElementById('orders-body').innerHTML = '<div class="empty">No open orders</div>';
+    return;
+  }
+
+  document.getElementById('orders-body').innerHTML = os.map(o => `
+    <div class="order-row">
+      <div>
+        <div class="order-sym">${o.symbol}</div>
+        <div class="order-detail">${o.qty} shares · ${o.type} · ${o.time_in_force.toUpperCase()}</div>
+      </div>
+      <span class="tag tag-${o.side}">${o.side}</span>
+    </div>`).join('');
+}
+
+async function loadHistory() {
+  const r  = await fetch(`${BASE}/orders?status=all&limit=8`, {headers: H});
+  const os = await r.json();
+  const closed = os.filter(o => o.status !== 'open');
+  document.getElementById('hist-count').textContent = closed.length;
+
+  if (!closed.length) {
+    document.getElementById('history-body').innerHTML = '<div class="empty">No order history yet</div>';
+    return;
+  }
+
+  document.getElementById('history-body').innerHTML = closed.map(o => {
+    const date = new Date(o.submitted_at).toLocaleDateString('en-US', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+    return `<div class="order-row">
+      <div>
+        <div class="order-sym">${o.symbol}</div>
+        <div class="order-detail">${o.qty} shares · ${o.filled_avg_price ? fmt(o.filled_avg_price) : '—'} · ${date}</div>
+      </div>
+      <div style="text-align:right;">
+        <span class="tag tag-${o.side}">${o.side}</span>
+        <div style="font-size:11px;color:var(--muted);margin-top:4px;">${o.status}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function loadAll() {
+  hideError();
+  countdownVal = 30;
+  try {
+    await loadAccount();
+    await loadPositions();
+    await loadOrders();
+    await loadHistory();
+    document.getElementById('last-update').textContent =
+      'Updated: ' + new Date().toLocaleTimeString('en-US', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+  } catch(e) {
+    showError('Connection failed: ' + e.message);
+    document.getElementById('last-update').textContent = 'Last attempt: ' + new Date().toLocaleTimeString();
+  }
+}
+
+// Countdown timer
+setInterval(() => {
+  countdownVal--;
+  if (countdownVal <= 0) {
+    countdownVal = 30;
+    loadAll();
+  }
+  document.getElementById('countdown').textContent = countdownVal;
+}, 1000);
+
+// Initial load
+loadAll();
+</script>
+</body>
+</html>
