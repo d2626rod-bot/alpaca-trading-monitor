@@ -1,5 +1,5 @@
 # Alpaca Paper Trading — Project Status
-**Last updated:** May 28, 2026 (Thursday — credential rotation, GitHub Pages, bug fixes)
+**Last updated:** May 29, 2026 (Friday — week close, 3 bugs fixed, entry rules tightened)
 **Student:** Daniel Rodriguez, Calgary Alberta (Mountain Time)
 
 ---
@@ -227,6 +227,46 @@ python3 check_smci.py    # Adapt symbol filter as needed
 
 ## ✅ Recent Wins
 
+### Week of May 26–29 — Summary
+
+**Portfolio: $51,341 → $52,309 | +$968 (+1.89%) in 4 trading days**
+
+| Day | P&L | Key Event |
+|-----|-----|-----------|
+| Mon May 26 | +$1,967 | MRVL and MU profit-takes fired; big SMCI/MU run |
+| Tue May 27 | -$160 | MRVL trailing stop exit; GOOGL + TSM entries |
+| Wed May 28 | +$392 | SMCI +20% profit-take; credential rotation done |
+| Thu May 29 | +$196 | GOOGL manually exited (stop bug); MSFT entered |
+
+**Trades:**
+- 💰 MRVL +10% partial sell
+- 💰 MU +10% partial sell
+- 💰 MU +20% partial sell
+- 💰 MRVL trailing stop exit (+$185)
+- 💰 SMCI +20% partial sell
+- 🔴 GOOGL manual exit (-$135, trailing stop bug)
+- 🟢 GOOGL entry (May 27)
+- 🟢 TSM entry (May 27)
+- 🟢 MSFT entry (May 29)
+
+**Open positions at week close:**
+SMCI (+42.3%), MU (+25.2%), MSFT (+1.6%), AMAT (+3.7%), LRCX (+3.6%), SPY (+1.2%), TSM (-0.5%)
+
+**Bugs fixed this week (4):**
+1. Trailing stop blind spot — hard stop added for positions that never reach +3%
+2. Sell Telegram alert showing $0.00 — SIP feed exception now isolated
+3. Entry MA20 buffer — price must be 2%+ above MA20 (caught GOOGL weakness in hindsight)
+4. Volume floor raised 0.3× → 0.5× to filter weak-volume days
+
+**Lessons learned:**
+- Strong runners (MU +25%, SMCI +42%) do the heavy lifting — protect them
+- A stock just touching MA20 has no real momentum — needs a buffer
+- The trailing stop +3% gate had a dangerous side effect for losing positions
+- Credentials in plain text are a real risk — `.env` is the right home
+- Every bug costs simulated money — cheap lessons before real money
+
+---
+
 ### May 28 — Credential rotation + GitHub Pages + bug fix
 
 **Fixes made (take effect at 7 AM restart May 29):**
@@ -329,12 +369,13 @@ The +10% profit-take re-fired 5 times instead of once — likely due to agent re
 ## 🐛 Open Issues
 
 ### Active
-- **Journal partial sell not yet verified in production** — `log_partial_sell()` was added May 27 PM. SMCI partial sell on May 28 at 11:27 AM did NOT log to Excel because the fix was applied while the agent was already running (old code in memory). Will verify on next profit-take after tomorrow's 7 AM restart.
+- **Journal partial sell not yet verified in production** — `log_partial_sell()` was added May 27 PM. Will confirm on next profit-take — look for `[JOURNAL] Partial sell logged:` in agent_output.log.
 
 ### Theoretical / lower priority
-- **`price_highs[symbol]` initialization audit** — when a new position is observed for the first time, `price_highs[symbol]` is set to the current price. If a stock dips immediately after purchase, this locks in a low reference. The +3% activation threshold (Bug 1 fix) mitigates this, but the initialization logic could be improved to use entry price as the floor.
-- **VIX / market drop filter not wired up** — `VIX_MAX = 30` and `MARKET_DROP_LIMIT = 0.025` are defined in `config.py` but the agent never queries VIX or checks intraday market drop. Agent will trade in any volatility environment. Needs Alpaca VIX data feed to implement.
-- **IEX feed limitation** — free Alpaca account only gets IEX data (2-3% of market volume) — volume threshold relaxed to 0.3x
+- **`price_highs[symbol]` initialization audit** — when a new position is observed for the first time, `price_highs[symbol]` is set to the current price. If a stock dips immediately after purchase, this locks in a low reference. The +3% activation threshold mitigates this but initialization could use entry price as the floor.
+- **VIX / market drop filter not wired up** — `VIX_MAX = 30` and `MARKET_DROP_LIMIT = 0.025` defined in `config.py` but agent never queries VIX. Needs Alpaca VIX data feed.
+- **IEX feed limitation** — free Alpaca account only gets IEX data (2-3% of real market volume) — volume threshold at 0.5x to compensate.
+- **Profit-take tiers for strong runners** — revisit in week of Jun 1: consider wider tiers (+20%/+40%) for explosive movers like MU and SMCI vs. keeping +10%/+20% for moderate stocks. Deferred pending real exit data.
 - **Considering VS Code** for easier file editing
 
 ---
@@ -395,20 +436,23 @@ The +10% profit-take re-fired 5 times instead of once — likely due to agent re
 | v25 (May 28) | Bug fix: sell alert `$0.00` price — SIP feed exception now isolated so order return value and journal call are unaffected |
 | v26 (May 28) | Security: credentials rotated, moved to `.env`, `config.py` reads via python-dotenv, `.gitignore` created |
 | v27 (May 28) | Feature: GitHub Pages live — iPhone monitor hosted at d2626rod-bot.github.io |
+| v28 (May 29) | Bug fix: hard stop loss added — positions that never reach +3% gain now exit correctly |
+| v29 (May 29) | Entry rule tightened: price must be 2%+ above MA20 (was just above) |
+| v30 (May 29) | Entry rule tightened: volume floor raised from 0.3× to 0.5× average |
 
 ---
 
 ## 🚀 Next Steps
 
-### This week
-1. **Verify journal.py logs partial sells** — watch `agent_output.log` for `[JOURNAL] Partial sell logged:` on the next profit-take after tomorrow's 7 AM restart.
-2. **Watch GOOGL** — sitting at $390.30, only $2 above trailing stop at $388.14. Could stop out soon.
-3. **Watch for +30% tier** — SMCI at +30.4%, MU at +21.6%. Consider adding a third profit-take tier.
+### Week of Jun 1
+1. **Verify journal partial sell** — watch for `[JOURNAL] Partial sell logged:` on next profit-take
+2. **Monitor MU and SMCI exits** — track final P&L when they eventually stop out; use data to decide on profit-take tier strategy (hold longer vs. partial sells)
+3. **Watch TSM** — slightly underwater at -0.5%, stop at $408.94. Could exit early next week
 4. Continue paper trading toward 3-month goal
 
 ### Later
-5. Audit `price_highs[symbol]` initialization (theoretical Bug 3)
-6. Wire up VIX filter — `VIX_MAX = 30` is already in config, just needs a data feed query added to `morning_scan()`
+5. Audit `price_highs[symbol]` initialization (theoretical bug)
+6. Wire up VIX filter — `VIX_MAX = 30` already in config, needs data feed query in `morning_scan()`
 7. Get friends' stock suggestions for watchlist expansion
 8. Consider VS Code for easier file editing
 
@@ -420,45 +464,52 @@ The +10% profit-take re-fired 5 times instead of once — likely due to agent re
 - Daniel is paper trading on Alpaca, learning before real money
 - Project lives at `~/alpaca_trading/` (NOT in Documents — that broke LaunchAgent with error 78)
 - LaunchAgent auto-starts at 7 AM MT, stops at 5 PM MT daily
-- **May 28 PM: Credential rotation done, GitHub Pages live, sell alert $0.00 fix applied**
-- All May 28 code changes take effect at 7 AM restart May 29
+- Week of May 26–29 complete: +$968 (+1.89%), 4 bugs fixed, entry rules tightened
 
-**Credential status (May 28):**
-- Alpaca API key: rotated ✅ — stored in `~/.alpaca_trading/.env`
-- Telegram token: rotated ✅ — stored in `~/.alpaca_trading/.env`
-- `config.py` reads from `.env` via python-dotenv ✅
-- `.gitignore` protects `.env` and `config.py` from GitHub ✅
+**System status (May 29 close):**
+- Agent: healthy, PID changes daily at 7 AM restart
+- Credentials: rotated, stored in `.env`, `config.py` reads via python-dotenv ✅
+- GitHub Pages live: https://d2626rod-bot.github.io/alpaca-trading-monitor/Alpaca_Mobile_Monitor.html
+- `.gitignore` protects `.env` and `config.py` ✅
 
-**GitHub Pages:**
-- Repo: https://github.com/d2626rod-bot/alpaca-trading-monitor
-- iPhone URL: https://d2626rod-bot.github.io/alpaca-trading-monitor/Alpaca_Mobile_Monitor.html
+**Open positions at May 29 close:**
+| Symbol | P&L | Trail Stop | Watch |
+|--------|-----|-----------|-------|
+| SMCI | +42.3% | $44.45 | 🔥 |
+| MU | +25.2% | $901.85 | 🔥 |
+| MSFT | +1.6% | $423.32 | New entry |
+| AMAT | +3.7% | $438.27 | Healthy |
+| LRCX | +3.6% | $316.35 | Healthy |
+| SPY | +1.2% | $727.74 | Steady |
+| TSM | -0.5% | $408.94 | ⚠️ Watch |
 
-**Open positions as of May 28 11:27 AM MT:**
-- SMCI: +30.4% (9 shares sold at +20% tier this morning)
-- MU: +21.6% (already took +10% and +20% profit-takes)
-- AMAT: +3.8%
-- LRCX: +3.7%
-- TSM: +0.5%
-- SPY: +1.0%
-- GOOGL: -0.5% ⚠️ near trailing stop at $388.14
+**Active profit-take state** (`triggered_profits.json`):
+`SMCI_profit_10`, `SMCI_profit_20`, `MU_profit_10`, `MU_profit_20` — all true
 
-**What to verify tomorrow morning:**
-1. `tail -f ~/alpaca_trading/agent_output.log` — confirm clean 7 AM restart with new credentials
-2. Watch for `[JOURNAL] Partial sell logged:` on next profit-take — confirms May 27 journal fix working
-3. Watch for sell Telegram alerts showing real price (not $0.00) — confirms May 28 fix working
-4. GOOGL — watch closely, only $2 above stop
+**What to watch week of Jun 1:**
+1. Verify `[JOURNAL] Partial sell logged:` fires on next profit-take
+2. TSM at -0.5% — could stop out early in the week
+3. MU and SMCI — track final exit prices for profit-take strategy review (deferred to Jun 1 week)
+4. Sell Telegram alerts should now show real prices (fix applied May 28, first test pending)
+
+**Entry rules as of May 29:**
+- Price must be **2%+ above MA20** (raised from just above)
+- Volume must be **0.5×** average (raised from 0.3×)
+- RSI between 55–70
+- 3-candle OR 5-candle higher highs AND higher lows
+- Market bullish (SPY above MA20)
 
 **Backups available:**
-- `~/alpaca_trading/agent.py.bak_20260528_*` (pre-sell-fix)
-- `~/alpaca_trading/config.py.bak_20260528_*` (pre-credential-rotation, contains OLD keys)
-- `~/alpaca_trading/agent.py.bak_20260527_1903` (pre-May-27-fixes)
-- `~/alpaca_trading/journal.py.bak_20260527_1903`
-- `~/alpaca_trading/strategy.py.bak_20260527_1912`
-- `~/alpaca_trading/risk.py.bak_20260527_1912`
+- `~/alpaca_trading/agent.py.bak_20260529_*` (pre-hard-stop fix)
+- `~/alpaca_trading/strategy.py.bak_20260529_*` (pre-MA20-buffer fix)
+- `~/alpaca_trading/config.py.bak_20260529_*` (pre-volume fix)
+- `~/alpaca_trading/agent.py.bak_20260528_*`
+- `~/alpaca_trading/config.py.bak_20260528_*` (contains OLD rotated keys — do not use)
 
 **Diagnostic tools:**
-- `~/alpaca_trading/check_smci.py` — queries Alpaca API for full order history (adapt symbol filter)
-- `cat ~/alpaca_trading/triggered_profits.json` — instant view of which profit tiers have fired
+- `tail -f ~/alpaca_trading/agent_output.log` — live log
+- `cat ~/alpaca_trading/triggered_profits.json` — profit-take state
+- `~/alpaca_trading/check_smci.py` — Alpaca order history query
 
 **Daniel's preferences:**
 - Patient step-by-step Terminal guidance (he's learning)
