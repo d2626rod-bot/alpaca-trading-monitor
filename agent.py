@@ -25,7 +25,7 @@ import pandas as pd
 
 from config import (
     API_KEY, SECRET_KEY, BASE_URL,
-    WATCHLIST, SCAN_TIME, SCAN_TIME_2, REPORT_TIME,
+    WATCHLIST, SCAN_TIME, SCAN_TIME_2, SCAN_TIME_EOD, REPORT_TIME,
     TRAILING_CHECK_MINS, VIX_MAX, TRAILING_ACTIVATE_AT,
     MAX_TOTAL_EXPOSURE, PROFIT_TAKE_SIZE,
     RE_ENTRY_WAIT_DAYS
@@ -220,8 +220,21 @@ def place_buy_order(symbol, qty, stop_loss_price, reason):
         return None
 
 
+# Sentinel returned by place_sell_order when the broker reports the shares are
+# already gone. Intentionally truthy so stop-exit callers still journal the
+# close (the position IS closed — we just didn't place the fill ourselves).
+SELL_ALREADY_CLOSED = "ALREADY_CLOSED"
+
+
 def place_sell_order(symbol, qty, reason, price=None):
-    """Place a market sell order."""
+    """Place a market sell order.
+
+    Returns:
+        the order object on success;
+        SELL_ALREADY_CLOSED if the broker says the shares are already gone
+            (caller should still journal the close so no ghost 'Open' row is left);
+        None on a genuine error (caller should leave the trade open and retry next cycle).
+    """
     try:
         order = api.submit_order(
             symbol=symbol,
@@ -239,7 +252,12 @@ def place_sell_order(symbol, qty, reason, price=None):
         alert_order_placed("SELL", qty, symbol, price, "Market")
         return order
     except Exception as e:
-        log(f"ERROR placing sell order for {symbol}: {e}")
+        err = str(e).lower()
+        if "insufficient qty" in err or "available: 0" in err:
+            log(f"[SELL SKIPPED] {symbol} — shares already sold (manual order or race condition)")
+            return SELL_ALREADY_CLOSED
+        else:
+            log(f"ERROR placing sell order for {symbol}: {e}")
         return None
 
 
@@ -295,11 +313,16 @@ def morning_scan():
     spy_bars = get_bars("SPY", limit=30)
     if not market_is_favorable(spy_bars):
         log("MARKET CONDITION: Bearish — no new entries today")
+        from sms import send_sms
+        send_sms("🔴 <b>MORNING SCAN</b>\nMarket bearish — no new entries today.\nExisting positions monitored.")
+        log("MORNING SCAN COMPLETE")
+        log("=" * 60)
         return
     else:
         log("MARKET CONDITION: Bullish — scanning for entries")
 
     log("-" * 60)
+    committed_this_scan = 0.0  # running $ tally of entries placed in THIS scan
     for symbol in WATCHLIST:
         log(f"Scanning {symbol}...")
 
@@ -338,8 +361,11 @@ def morning_scan():
             log(f"  {symbol}: Position size is 0 — skip")
             continue
 
-        # Check total exposure
-        ok, exposure_pct, exposure_msg = check_exposure(positions, portfolio_value, dollar_amount)
+        # Check total exposure — include $ already committed in this same scan
+        # (positions list is fetched once and does NOT update mid-loop)
+        ok, exposure_pct, exposure_msg = check_exposure(
+            positions, portfolio_value, dollar_amount + committed_this_scan
+        )
         log(f"  {symbol}: Exposure check — {exposure_msg}")
 
         if not ok:
@@ -348,6 +374,7 @@ def morning_scan():
 
         # PLACE ORDER
         place_buy_order(symbol, shares, stop_price, reason)
+        committed_this_scan += dollar_amount  # count it against the exposure cap
         price_highs[symbol] = current_price
         orders_placed.append(f"{symbol} {shares} shares @ ~${current_price:.2f}")
 
@@ -401,7 +428,8 @@ def monitor_positions():
 
                 # ── Check Hard Stop Loss (position never reached +3%) ──
                 hard_stop = entry_price * (1 - trail_pct)
-                if gain_pct < TRAILING_ACTIVATE_AT * 100 and current_price <= hard_stop:
+                trailing_ever_activated = highest_price >= entry_price * (1 + TRAILING_ACTIVATE_AT)
+                if not trailing_ever_activated and current_price <= hard_stop:
                     log(f"HARD STOP HIT: {symbol} — selling {qty} shares at ${current_price:.2f}")
                     alert_stop_hit(symbol, current_price, hard_stop)
                     order = place_sell_order(symbol, qty, f"Hard stop hit at ${hard_stop:.2f}", price=current_price)
@@ -414,8 +442,8 @@ def monitor_positions():
                         for k in keys_to_delete:
                             del price_highs[k]
 
-                # ── Check Trailing Stop ──
-                elif gain_pct >= TRAILING_ACTIVATE_AT * 100 and current_price <= stop_price:
+                # ── Check Trailing Stop (fires if highest price ever crossed +3% threshold) ──
+                elif trailing_ever_activated and current_price <= stop_price:
                     log(f"TRAILING STOP HIT: {symbol} — selling {qty} shares at ${current_price:.2f}")
                     alert_stop_hit(symbol, current_price, stop_price)
                     order = place_sell_order(symbol, qty, f"Trailing stop hit at ${stop_price:.2f}", price=current_price)
@@ -432,8 +460,9 @@ def monitor_positions():
                     continue
 
                 # ── Check Profit Targets ──
-                # Only trigger if position size is still close to original
-                # (prevents repeated triggering after partial sells)
+                # Skip if position was recently stopped out (prevents re-trigger after stop)
+                if symbol in recent_stopouts:
+                    continue
                 targets = check_profit_targets(entry_price, current_price)
                 for target in targets:
                     sell_qty = max(1, int(qty * PROFIT_TAKE_SIZE))
@@ -446,7 +475,11 @@ def monitor_positions():
                         log(f"PROFIT TARGET +{target['pct']}% REACHED: {symbol} — selling {sell_qty} shares")
                         alert_profit_target(symbol, sell_qty, target['pct'])
                         order = place_sell_order(symbol, sell_qty, f"Profit target +{target['pct']}%", price=current_price)
-                        if order:
+                        if order == SELL_ALREADY_CLOSED:
+                            # Whole position already gone at the broker — record a full
+                            # close (not a partial) so we don't leave a ghost 'Open' row.
+                            close_trade(symbol, current_price, "Position already closed at broker (reconciled)")
+                        elif order:
                             log_partial_sell(symbol, sell_qty, entry_price, current_price,
                                              f"Profit target +{target['pct']}%")
                     else:
@@ -521,9 +554,9 @@ def daily_report():
 def health_check():
     """Send hourly status update via Telegram during trading day."""
     try:
-        # Run during agent operating hours (7 AM - 5 PM MT)
+        # Run during market hours only (7 AM - 2 PM MT)
         now = datetime.now()
-        if not (7 <= now.hour < 17):
+        if not (7 <= now.hour < 14):
             return
 
         account   = get_account()
@@ -580,6 +613,12 @@ def setup_schedule():
     schedule.every().thursday.at(SCAN_TIME_2).do(morning_scan)
     schedule.every().friday.at(SCAN_TIME_2).do(morning_scan)
 
+    schedule.every().monday.at(SCAN_TIME_EOD).do(morning_scan)
+    schedule.every().tuesday.at(SCAN_TIME_EOD).do(morning_scan)
+    schedule.every().wednesday.at(SCAN_TIME_EOD).do(morning_scan)
+    schedule.every().thursday.at(SCAN_TIME_EOD).do(morning_scan)
+    schedule.every().friday.at(SCAN_TIME_EOD).do(morning_scan)
+
     schedule.every(TRAILING_CHECK_MINS).minutes.do(monitor_positions)
 
     # Hourly health check during market hours
@@ -591,7 +630,7 @@ def setup_schedule():
     schedule.every().thursday.at(REPORT_TIME).do(daily_report)
     schedule.every().friday.at(REPORT_TIME).do(daily_report)
 
-    log(f"Schedule set — Scans: {SCAN_TIME} MT & {SCAN_TIME_2} MT | Report: {REPORT_TIME} MT")
+    log(f"Schedule set — Scans: {SCAN_TIME} MT & {SCAN_TIME_2} MT & {SCAN_TIME_EOD} MT | Report: {REPORT_TIME} MT")
     log(f"Trailing stop monitor: every {TRAILING_CHECK_MINS} minutes")
 
 
