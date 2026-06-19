@@ -93,6 +93,43 @@ def check_entry_conditions(symbol, bars_df):
     )
 
 
+def compute_signal_strength(bars_df):
+    """Score a candidate that already PASSED check_entry_conditions, so the
+    scanner can rank the survivors and take only the strongest. Higher = better.
+
+    Blend (all from the latest bar):
+      - momentum: percent the price sits above its 20-day MA (primary weight)
+      - volume confirmation: today's volume / 20-day avg volume (capped at 3x)
+      - RSI headroom: distance below the overbought cap (rewards 55-65 over 68-70)
+
+    Returns (score: float, detail: str). Returns (0.0, "no data") if bars are
+    insufficient — the caller already has the pass/fail from check_entry_conditions.
+    """
+    if bars_df is None or len(bars_df) < MA_LONG + 5:
+        return 0.0, "no data"
+
+    df = bars_df.copy()
+    df["ma20"]    = df["close"].rolling(MA_SHORT).mean()
+    df["rsi"]     = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
+    df["vol_avg"] = df["volume"].rolling(MA_SHORT).mean()
+    latest = df.iloc[-1]
+
+    price   = latest["close"]
+    ma20    = latest["ma20"]
+    rsi     = latest["rsi"]
+    volume  = latest["volume"]
+    vol_avg = latest["vol_avg"]
+
+    momentum     = (price - ma20) / ma20 * 100.0 if ma20 else 0.0   # % above MA20
+    vol_ratio    = (volume / vol_avg) if vol_avg else 1.0
+    vol_score    = min(vol_ratio, 3.0) * 2.0                        # confirmation, capped
+    rsi_headroom = max(0.0, RSI_OVERBOUGHT - rsi) * 0.2             # prefer room to run
+
+    score = momentum + vol_score + rsi_headroom
+    detail = f"score {score:.1f} (mom {momentum:+.1f}% | vol {vol_ratio:.1f}x | rsi {rsi:.0f})"
+    return round(score, 2), detail
+
+
 def check_trailing_stop(symbol, entry_price, current_price, highest_price):
     """
     Check if trailing stop has been hit.

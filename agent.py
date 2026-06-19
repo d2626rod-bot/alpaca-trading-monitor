@@ -28,12 +28,12 @@ from config import (
     WATCHLIST, SCAN_TIME, SCAN_TIME_2, SCAN_TIME_EOD, REPORT_TIME,
     TRAILING_CHECK_MINS, VIX_MAX, TRAILING_ACTIVATE_AT,
     MAX_TOTAL_EXPOSURE, PROFIT_TAKE_SIZE,
-    RE_ENTRY_WAIT_DAYS
+    RE_ENTRY_WAIT_DAYS, MAX_NEW_POSITIONS_PER_SCAN
 )
 from strategy import (
     check_entry_conditions, check_trailing_stop,
     check_profit_targets, market_is_favorable,
-    get_trailing_stop_pct
+    get_trailing_stop_pct, compute_signal_strength
 )
 from risk import (
     calculate_position_size, check_exposure,
@@ -322,7 +322,9 @@ def morning_scan():
         log("MARKET CONDITION: Bullish — scanning for entries")
 
     log("-" * 60)
-    committed_this_scan = 0.0  # running $ tally of entries placed in THIS scan
+
+    # ── Phase 1: gather every candidate that passes entry conditions ──
+    candidates = []
     for symbol in WATCHLIST:
         log(f"Scanning {symbol}...")
 
@@ -340,43 +342,60 @@ def morning_scan():
 
         # Check entry conditions
         should_enter, reason = check_entry_conditions(symbol, bars)
-
         if not should_enter:
             log(f"  {symbol}: No entry signal — {reason}")
             continue
 
-        log(f"  {symbol}: ENTRY SIGNAL — {reason}")
-
-        # Calculate position size
+        # Size the position now so 0-share names drop out before ranking
         current_price = float(bars.iloc[-1]["close"])
-        stop_loss_pct = get_stop_loss_pct(symbol)
-        stop_loss_price = current_price * (1 - stop_loss_pct)
-
         shares, dollar_amount, stop_price, sizing_reason = calculate_position_size(
             symbol, portfolio_value, current_price
         )
-        log(f"  {symbol}: Position sizing — {sizing_reason}")
-
         if shares <= 0:
-            log(f"  {symbol}: Position size is 0 — skip")
+            log(f"  {symbol}: ENTRY SIGNAL but position size is 0 — skip ({sizing_reason})")
             continue
+
+        score, score_detail = compute_signal_strength(bars)
+        log(f"  {symbol}: ENTRY SIGNAL — {score_detail} | {sizing_reason}")
+        candidates.append({
+            "symbol": symbol, "score": score, "current_price": current_price,
+            "shares": shares, "dollar_amount": dollar_amount,
+            "stop_price": stop_price, "reason": reason,
+        })
+
+    # ── Phase 2: rank by signal strength, keep the strongest, then buy ──
+    candidates.sort(key=lambda c: c["score"], reverse=True)
+    if len(candidates) > MAX_NEW_POSITIONS_PER_SCAN:
+        deferred = candidates[MAX_NEW_POSITIONS_PER_SCAN:]
+        log(f"RANKING: {len(candidates)} signals — taking top {MAX_NEW_POSITIONS_PER_SCAN} "
+            f"by strength, deferring {len(deferred)}: "
+            f"{', '.join(c['symbol'] + ' (' + str(c['score']) + ')' for c in deferred)}")
+        candidates = candidates[:MAX_NEW_POSITIONS_PER_SCAN]
+    else:
+        log(f"RANKING: {len(candidates)} signal(s) — all within the "
+            f"{MAX_NEW_POSITIONS_PER_SCAN}-per-scan cap")
+
+    committed_this_scan = 0.0  # running $ tally of entries placed in THIS scan
+    for c in candidates:
+        symbol = c["symbol"]
 
         # Check total exposure — include $ already committed in this same scan
         # (positions list is fetched once and does NOT update mid-loop)
         ok, exposure_pct, exposure_msg = check_exposure(
-            positions, portfolio_value, dollar_amount + committed_this_scan
+            positions, portfolio_value, c["dollar_amount"] + committed_this_scan
         )
         log(f"  {symbol}: Exposure check — {exposure_msg}")
-
         if not ok:
             log(f"  {symbol}: Exposure limit reached — skip")
             continue
 
         # PLACE ORDER
-        place_buy_order(symbol, shares, stop_price, reason)
-        committed_this_scan += dollar_amount  # count it against the exposure cap
-        price_highs[symbol] = current_price
-        orders_placed.append(f"{symbol} {shares} shares @ ~${current_price:.2f}")
+        place_buy_order(symbol, c["shares"], c["stop_price"], c["reason"])
+        committed_this_scan += c["dollar_amount"]  # count it against the exposure cap
+        price_highs[symbol] = c["current_price"]
+        orders_placed.append(
+            f"{symbol} {c['shares']} shares @ ~${c['current_price']:.2f} (rank {c['score']})"
+        )
 
     # ── Send Telegram scan summary ──
     from sms import send_sms
