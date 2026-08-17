@@ -54,13 +54,28 @@ TRAILING_STOP_STABLE  = 0.05   # 5% trailing stop for stable stocks
 TRAILING_STOP_VOLATILE= 0.08   # 8% trailing stop for volatile stocks
 TRAILING_STOP_ETF     = 0.04   # 4% trailing stop for ETFs
 
-# Profit Taking Rules
+# Profit Taking Rules (legacy trend-following — superseded by the momentum-swing
+# exit engine below; kept only so old imports don't break)
 PROFIT_TAKE_LEVEL_1   = 0.10   # Sell 25% of position at +10%
 PROFIT_TAKE_LEVEL_2   = 0.20   # Sell another 25% at +20%
 PROFIT_TAKE_SIZE      = 0.25   # Sell 25% at each profit level
 
-# Trailing Stop Activation
+# Trailing Stop Activation (legacy)
 TRAILING_ACTIVATE_AT  = 0.03   # Activate trailing stop after +3% gain
+
+# ============================================================
+# Momentum-Swing Exit Engine  (the active exit logic — see strategy.decide_exit)
+# Capture the couple-percent pop, never give it back, cut dead money by a time
+# limit, but let genuine trends run. STOP_LOSS_* above is the pre-profit disaster
+# brake; these take over the moment a trade is in profit.
+# ============================================================
+BREAKEVEN_AT           = 0.02   # once +2% reached, move the stop to entry (breakeven)
+SWING_TRAIL_PCT        = 0.03   # after arming, trail 3% below the highest price seen
+SCALE_OUT_AT           = 0.05   # take partial profit at +5%
+SCALE_OUT_SIZE         = 0.50   # sell 50% of the position at the scale-out
+MAX_HOLD_DAYS          = 10     # time stop: exit by 10 TRADING days held ...
+TIME_STOP_EXEMPT_GAIN  = 0.05   # ... unless up >= +5% ...
+TIME_STOP_NEAR_HIGH    = 0.015  # ... or within 1.5% of the peak since entry (still trending)
 
 # ============================================================
 # Entry Conditions

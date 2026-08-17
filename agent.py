@@ -28,12 +28,13 @@ from config import (
     WATCHLIST, SCAN_TIME, SCAN_TIME_2, SCAN_TIME_EOD, REPORT_TIME,
     TRAILING_CHECK_MINS, VIX_MAX, TRAILING_ACTIVATE_AT,
     MAX_TOTAL_EXPOSURE, PROFIT_TAKE_SIZE,
-    RE_ENTRY_WAIT_DAYS, MAX_NEW_POSITIONS_PER_SCAN
+    RE_ENTRY_WAIT_DAYS, MAX_NEW_POSITIONS_PER_SCAN,
+    SCALE_OUT_AT, SCALE_OUT_SIZE
 )
 from strategy import (
     check_entry_conditions, check_trailing_stop,
     check_profit_targets, market_is_favorable,
-    get_trailing_stop_pct, compute_signal_strength
+    get_trailing_stop_pct, compute_signal_strength, decide_exit
 )
 from risk import (
     calculate_position_size, check_exposure,
@@ -56,6 +57,56 @@ price_highs = {}
 # Format: { "SYMBOL": datetime_of_stopout }
 recent_stopouts = {}
 
+# ── Track entry dates for the momentum-swing time stop ──
+# Format: { "SYMBOL": "YYYY-MM-DD" }  (persisted to entry_dates.json)
+entry_dates = {}
+
+
+def load_entry_dates():
+    """Load persisted per-position entry dates (for the time stop)."""
+    import json
+    try:
+        if os.path.exists("entry_dates.json"):
+            with open("entry_dates.json", "r") as f:
+                entry_dates.update(json.load(f))
+            log(f"[ENTRY DATES] Loaded {len(entry_dates)} entry dates")
+    except Exception as e:
+        log(f"[ENTRY DATES] Error loading: {e}")
+
+
+def save_entry_dates():
+    """Persist per-position entry dates."""
+    import json
+    try:
+        with open("entry_dates.json", "w") as f:
+            json.dump(entry_dates, f)
+    except Exception as e:
+        log(f"[ENTRY DATES] Error saving: {e}")
+
+
+def trading_days_held(entry_date_str):
+    """Trading (business) days a position has been held. 0 if the date is unknown."""
+    if not entry_date_str:
+        return 0
+    try:
+        entry = pd.to_datetime(entry_date_str).date()
+        today = datetime.now().date()
+        if today <= entry:
+            return 0
+        return max(0, len(pd.bdate_range(entry, today)) - 1)
+    except Exception:
+        return 0
+
+
+def _clear_position_state(symbol):
+    """Forget all per-position tracking after a full close."""
+    keys = [symbol, f"{symbol}_scaled"] + [k for k in list(price_highs.keys())
+                                            if k.startswith(f"{symbol}_profit_")]
+    for k in keys:
+        price_highs.pop(k, None)
+    entry_dates.pop(symbol, None)
+
+
 def load_triggered_profits():
     """Load previously triggered profit levels from file."""
     import json
@@ -74,7 +125,8 @@ def save_triggered_profits():
     """Save triggered profit levels to file."""
     import json
     try:
-        triggered = {k: v for k, v in price_highs.items() if "_profit_" in str(k)}
+        triggered = {k: v for k, v in price_highs.items()
+                     if "_profit_" in str(k) or "_scaled" in str(k)}
         with open("triggered_profits.json", "w") as f:
             json.dump(triggered, f)
     except Exception as e:
@@ -99,6 +151,7 @@ def restore_price_highs():
         try:
             end   = datetime.now().strftime("%Y-%m-%d")
             start = (datetime.now() - timedelta(days=90)).strftime("%Y-%m-%d")
+            entry_date = entry_dates.get(symbol)
             fetched = False
 
             for feed in ["sip", "iex"]:
@@ -116,13 +169,15 @@ def restore_price_highs():
                     if isinstance(bars.columns, pd.MultiIndex):
                         bars.columns = bars.columns.get_level_values(0)
                     bars = bars.sort_index()
-                    true_high = float(bars["high"].max())
-                    true_high = max(true_high, current, entry_price)
+                    # Clip to the holding period — the high must be the peak SINCE
+                    # entry, never a pre-entry high (which would fake a huge gain and
+                    # trip the trailing stop on a freshly-bought name).
+                    if entry_date:
+                        bars = bars[bars.index.date >= pd.to_datetime(entry_date).date()]
+                    since_entry_high = float(bars["high"].max()) if len(bars) else current
+                    true_high = max(since_entry_high, current, entry_price)
                     price_highs[symbol] = true_high
-                    trail_pct  = get_trailing_stop_pct(symbol)
-                    trail_stop = true_high * (1 - trail_pct)
-                    log(f"  {symbol}: Highest since entry = ${true_high:.2f} | "
-                        f"Trailing stop restored at ${trail_stop:.2f}")
+                    log(f"  {symbol}: High since entry ({entry_date or 'unknown'}) = ${true_high:.2f}")
                     fetched = True
                     break
                 except Exception:
@@ -393,6 +448,8 @@ def morning_scan():
         place_buy_order(symbol, c["shares"], c["stop_price"], c["reason"])
         committed_this_scan += c["dollar_amount"]  # count it against the exposure cap
         price_highs[symbol] = c["current_price"]
+        entry_dates[symbol] = datetime.now().strftime("%Y-%m-%d")  # start the time-stop clock
+        save_entry_dates()
         orders_placed.append(
             f"{symbol} {c['shares']} shares @ ~${c['current_price']:.2f} (rank {c['score']})"
         )
@@ -429,80 +486,62 @@ def monitor_positions():
                 qty           = int(float(position.qty))
                 entry_price   = float(position.avg_entry_price)
                 current_price = float(position.current_price)
-                trail_pct     = get_trailing_stop_pct(symbol)
 
-                # Update highest price seen
+                # Update highest price seen since entry
                 if symbol not in price_highs:
                     price_highs[symbol] = current_price
                 else:
                     price_highs[symbol] = max(price_highs[symbol], current_price)
-
                 highest_price = price_highs[symbol]
-                stop_price    = highest_price * (1 - trail_pct)
-                gain_pct      = (current_price - entry_price) / entry_price * 100
 
-                log(f"[MONITOR] {symbol}: Price=${current_price:.2f} | "
-                    f"High=${highest_price:.2f} | Stop=${stop_price:.2f} | "
-                    f"P&L={gain_pct:+.1f}%")
+                gain_pct       = (current_price - entry_price) / entry_price * 100
+                days_held      = trading_days_held(entry_dates.get(symbol))
+                scaled_key     = f"{symbol}_scaled"
+                already_scaled = bool(price_highs.get(scaled_key, False))
+                hard_stop_pct  = get_stop_loss_pct(symbol)
 
-                # ── Check Hard Stop Loss (position never reached +3%) ──
-                hard_stop = entry_price * (1 - trail_pct)
-                trailing_ever_activated = highest_price >= entry_price * (1 + TRAILING_ACTIVATE_AT)
-                if not trailing_ever_activated and current_price <= hard_stop:
-                    log(f"HARD STOP HIT: {symbol} — selling {qty} shares at ${current_price:.2f}")
-                    alert_stop_hit(symbol, current_price, hard_stop)
-                    order = place_sell_order(symbol, qty, f"Hard stop hit at ${hard_stop:.2f}", price=current_price)
-                    if order:
-                        close_trade(symbol, current_price, f"Hard stop exit at ${hard_stop:.2f}")
+                log(f"[MONITOR] {symbol}: Price=${current_price:.2f} | High=${highest_price:.2f} | "
+                    f"P&L={gain_pct:+.1f}% | Held={days_held}d")
+
+                decision = decide_exit(entry_price, current_price, highest_price,
+                                       days_held, already_scaled, hard_stop_pct)
+                action = decision["action"]
+
+                # Don't re-trade a name we just stopped out this cycle
+                if symbol in recent_stopouts and action != "sell_all":
+                    continue
+
+                # ── Full exit (protective stop or time stop) ──
+                if action == "sell_all":
+                    log(f"EXIT {symbol}: {decision['reason']} — selling {qty} shares at ${current_price:.2f}")
+                    alert_stop_hit(symbol, current_price, decision["stop"])
+                    order = place_sell_order(symbol, qty, decision["reason"], price=current_price)
+                    if order:  # real fill OR the SELL_ALREADY_CLOSED sentinel (both truthy)
+                        close_trade(symbol, current_price, decision["reason"])
                         recent_stopouts[symbol] = datetime.now()
-                        if symbol in price_highs:
-                            del price_highs[symbol]
-                        keys_to_delete = [k for k in list(price_highs.keys()) if k.startswith(f"{symbol}_profit_")]
-                        for k in keys_to_delete:
-                            del price_highs[k]
-
-                # ── Check Trailing Stop (fires if highest price ever crossed +3% threshold) ──
-                elif trailing_ever_activated and current_price <= stop_price:
-                    log(f"TRAILING STOP HIT: {symbol} — selling {qty} shares at ${current_price:.2f}")
-                    alert_stop_hit(symbol, current_price, stop_price)
-                    order = place_sell_order(symbol, qty, f"Trailing stop hit at ${stop_price:.2f}", price=current_price)
-                    if order:
-                        close_trade(symbol, current_price, f"Trailing stop exit at ${stop_price:.2f}")
-                        recent_stopouts[symbol] = datetime.now()
-                        if symbol in price_highs:
-                            del price_highs[symbol]
-                        # Clear profit triggers for this symbol
-                        keys_to_delete = [k for k in list(price_highs.keys()) if k.startswith(f"{symbol}_profit_")]
-                        for k in keys_to_delete:
-                            del price_highs[k]
+                        _clear_position_state(symbol)
                         save_triggered_profits()
-                    continue
+                        save_entry_dates()
 
-                # ── Check Profit Targets ──
-                # Skip if position was recently stopped out (prevents re-trigger after stop)
-                if symbol in recent_stopouts:
-                    continue
-                targets = check_profit_targets(entry_price, current_price)
-                for target in targets:
-                    sell_qty = max(1, int(qty * PROFIT_TAKE_SIZE))
-                    # Guard: don't sell if we'd be selling more than 30% of remaining position
-                    # This prevents repeated triggers at the same level
-                    trigger_key = f"{symbol}_profit_{target['pct']}"
-                    if trigger_key not in price_highs:
-                        price_highs[trigger_key] = True  # Mark as triggered
-                        save_triggered_profits()  # Persist to file
-                        log(f"PROFIT TARGET +{target['pct']}% REACHED: {symbol} — selling {sell_qty} shares")
-                        alert_profit_target(symbol, sell_qty, target['pct'])
-                        order = place_sell_order(symbol, sell_qty, f"Profit target +{target['pct']}%", price=current_price)
-                        if order == SELL_ALREADY_CLOSED:
-                            # Whole position already gone at the broker — record a full
-                            # close (not a partial) so we don't leave a ghost 'Open' row.
-                            close_trade(symbol, current_price, "Position already closed at broker (reconciled)")
-                        elif order:
-                            log_partial_sell(symbol, sell_qty, entry_price, current_price,
-                                             f"Profit target +{target['pct']}%")
-                    else:
-                        pass  # Already triggered this level — skip
+                # ── Scale-out: bank half the pop, let the rest ride the trail ──
+                elif action == "scale_out":
+                    sell_qty = max(1, int(qty * SCALE_OUT_SIZE))
+                    if sell_qty >= qty:          # never scale the whole position out
+                        sell_qty = max(1, qty - 1)
+                    log(f"SCALE-OUT {symbol}: {decision['reason']} — selling {sell_qty}/{qty} at ${current_price:.2f}")
+                    alert_profit_target(symbol, sell_qty, int(SCALE_OUT_AT * 100))
+                    order = place_sell_order(symbol, sell_qty, decision["reason"], price=current_price)
+                    if order == SELL_ALREADY_CLOSED:
+                        close_trade(symbol, current_price, "Position already closed at broker (reconciled)")
+                        recent_stopouts[symbol] = datetime.now()
+                        _clear_position_state(symbol)
+                        save_triggered_profits()
+                        save_entry_dates()
+                    elif order:
+                        log_partial_sell(symbol, sell_qty, entry_price, current_price, decision["reason"])
+                        price_highs[scaled_key] = True   # one-time flag
+                        save_triggered_profits()
+                # else: action == "hold" — nothing to do
 
             except Exception as e:
                 log(f"[MONITOR] ERROR processing {position.symbol}: {e}")
@@ -682,9 +721,17 @@ if __name__ == "__main__":
         log("Outside market hours — skipping Telegram startup alert")
     log(f"Watchlist      : {WATCHLIST}")
 
-    # Restore trailing stop highs from historical data
+    # Restore entry dates FIRST — restore_price_highs() needs them to clip the
+    # high to the holding period. Self-heal any held position with no recorded
+    # entry date (default to today so it gets a fresh window).
+    load_entry_dates()
+    for _p in (get_positions() or []):
+        entry_dates.setdefault(_p.symbol, datetime.now().strftime("%Y-%m-%d"))
+    save_entry_dates()
+
+    # Restore highest-price-since-entry for each position
     restore_price_highs()
-    # Restore triggered profit levels from file
+    # Restore triggered profit / scale-out flags from file
     load_triggered_profits()
 
     # Run initial account report

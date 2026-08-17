@@ -5,11 +5,14 @@
 import pandas as pd
 import numpy as np
 import ta
+from datetime import datetime
 from config import (
     MA_SHORT, MA_LONG, RSI_MIN, RSI_MAX, RSI_OVERBOUGHT,
     VOLUME_MULTIPLIER, TRAILING_ACTIVATE_AT,
     TRAILING_STOP_STABLE, TRAILING_STOP_VOLATILE, TRAILING_STOP_ETF,
-    VOLATILE_STOCKS, ETFS
+    VOLATILE_STOCKS, ETFS,
+    BREAKEVEN_AT, SWING_TRAIL_PCT, SCALE_OUT_AT, SCALE_OUT_SIZE,
+    MAX_HOLD_DAYS, TIME_STOP_EXEMPT_GAIN, TIME_STOP_NEAR_HIGH
 )
 
 
@@ -21,6 +24,30 @@ def get_trailing_stop_pct(symbol):
         return TRAILING_STOP_VOLATILE
     else:
         return TRAILING_STOP_STABLE
+
+
+def _completed_bars(df):
+    """Return bars through the last COMPLETED session, dropping today's
+    in-progress daily bar.
+
+    On the free IEX feed that current-day bar is only a partial slice during
+    market hours, which distorts any check that reads the latest bar's volume
+    or high/low (volume reads far below the full-day average; today's high/low
+    hasn't formed yet). Price/MA/RSI deliberately still use the live bar.
+    """
+    try:
+        if len(df) >= 2 and df.index[-1].date() == datetime.now().date():
+            return df.iloc[:-1]
+    except AttributeError:
+        pass  # non-datetime index (e.g. unit tests) — use as-is
+    return df
+
+
+def _completed_bar_volume(df):
+    """Return (volume, 20-day avg volume) from the last COMPLETED daily bar."""
+    cdf = _completed_bars(df)
+    avg = cdf["volume"].rolling(MA_SHORT).mean().iloc[-1]
+    return float(cdf["volume"].iloc[-1]), float(avg)
 
 
 def check_entry_conditions(symbol, bars_df):
@@ -41,16 +68,16 @@ def check_entry_conditions(symbol, bars_df):
     # ── RSI ──
     df["rsi"] = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
 
-    # ── Volume Average ──
-    df["vol_avg"] = df["volume"].rolling(MA_SHORT).mean()
-
     latest = df.iloc[-1]
     price   = latest["close"]
     ma20    = latest["ma20"]
     ma50    = latest["ma50"]
     rsi     = latest["rsi"]
-    volume  = latest["volume"]
-    vol_avg = latest["vol_avg"]
+
+    # Volume confirmation uses the last COMPLETED daily bar — today's in-progress
+    # bar on the free IEX feed is a partial slice and would always read below the
+    # full-day average, falsely failing every morning entry.
+    volume, vol_avg = _completed_bar_volume(df)
 
     # ── Condition Checks ──
     reasons = []
@@ -73,9 +100,12 @@ def check_entry_conditions(symbol, bars_df):
     if rsi > RSI_OVERBOUGHT:
         reasons.append(f"RSI {rsi:.1f} is OVERBOUGHT (above {RSI_OVERBOUGHT})")
 
-    # 4. Higher highs and higher lows (relaxed — 3 OR 5 candle confirmation)
-    recent3 = df.tail(3)
-    recent5 = df.tail(5)
+    # 4. Higher highs and higher lows (relaxed — 3 OR 5 candle confirmation).
+    # Evaluated on COMPLETED bars: today's partial high/low on the free IEX feed
+    # hasn't formed yet, so including it falsely fails the trend on strong names.
+    cdf = _completed_bars(df)
+    recent3 = cdf.tail(3)
+    recent5 = cdf.tail(5)
     hh3 = all(recent3["high"].diff().dropna() > 0)
     hl3 = all(recent3["low"].diff().dropna() > 0)
     hh5 = all(recent5["high"].diff().dropna() > 0)
@@ -99,7 +129,7 @@ def compute_signal_strength(bars_df):
 
     Blend (all from the latest bar):
       - momentum: percent the price sits above its 20-day MA (primary weight)
-      - volume confirmation: today's volume / 20-day avg volume (capped at 3x)
+      - volume confirmation: last completed bar's volume / 20-day avg (capped at 3x)
       - RSI headroom: distance below the overbought cap (rewards 55-65 over 68-70)
 
     Returns (score: float, detail: str). Returns (0.0, "no data") if bars are
@@ -111,14 +141,12 @@ def compute_signal_strength(bars_df):
     df = bars_df.copy()
     df["ma20"]    = df["close"].rolling(MA_SHORT).mean()
     df["rsi"]     = ta.momentum.RSIIndicator(df["close"], window=14).rsi()
-    df["vol_avg"] = df["volume"].rolling(MA_SHORT).mean()
     latest = df.iloc[-1]
 
     price   = latest["close"]
     ma20    = latest["ma20"]
     rsi     = latest["rsi"]
-    volume  = latest["volume"]
-    vol_avg = latest["vol_avg"]
+    volume, vol_avg = _completed_bar_volume(df)   # last completed bar, not today's partial
 
     momentum     = (price - ma20) / ma20 * 100.0 if ma20 else 0.0   # % above MA20
     vol_ratio    = (volume / vol_avg) if vol_avg else 1.0
@@ -150,6 +178,71 @@ def check_trailing_stop(symbol, entry_price, current_price, highest_price):
         return True, stop_price, f"TRAILING STOP HIT — Current: ${current_price:.2f} | Stop: ${stop_price:.2f}"
 
     return False, stop_price, f"Trailing stop active — Stop: ${stop_price:.2f} | Current: ${current_price:.2f}"
+
+
+def decide_exit(entry, current, high, days_held, already_scaled, hard_stop_pct):
+    """Momentum-swing exit decision for one open position (pure, side-effect free).
+
+    Rules, in priority order:
+      1. Protective stop —
+           * before the trade ever reaches +BREAKEVEN_AT: the disaster brake at
+             entry*(1 - hard_stop_pct);
+           * once it has reached +BREAKEVEN_AT ("armed"): the higher of breakeven
+             (entry) and a SWING_TRAIL_PCT trail below the peak. So a pop can never
+             round-trip into a loss, and gains ratchet up as price rises.
+      2. Time stop — at MAX_HOLD_DAYS held, exit UNLESS the position is up
+         >= TIME_STOP_EXEMPT_GAIN or still within TIME_STOP_NEAR_HIGH of its peak
+         (i.e. genuinely trending — let it run).
+      3. Scale-out — the first time gain reaches +SCALE_OUT_AT and we haven't yet,
+         sell SCALE_OUT_SIZE of the position to bank the pop; the rest rides the trail.
+      4. Otherwise hold.
+
+    Args use raw prices; `high` is the highest price seen since entry, `days_held`
+    is trading days, `already_scaled` is whether the one-time scale-out already fired.
+    Returns dict: {"action": "sell_all"|"scale_out"|"hold", "reason": str, "stop": float}.
+    """
+    if entry <= 0:
+        return {"action": "hold", "reason": "invalid entry price", "stop": 0.0}
+
+    peak_gain = (high - entry) / entry
+    gain      = (current - entry) / entry
+    armed     = peak_gain >= BREAKEVEN_AT
+
+    # ── 1. Protective stop ──
+    if armed:
+        stop = max(entry, high * (1 - SWING_TRAIL_PCT))
+    else:
+        stop = entry * (1 - hard_stop_pct)
+
+    if current <= stop:
+        if not armed:
+            reason = f"Hard stop {hard_stop_pct*100:.0f}% hit at ${stop:.2f}"
+        elif stop <= entry * 1.0002:
+            reason = f"Breakeven stop hit at ${stop:.2f} (protected the pop)"
+        else:
+            reason = f"Trailing {SWING_TRAIL_PCT*100:.0f}% stop hit at ${stop:.2f} (locked +{(stop-entry)/entry*100:.1f}%)"
+        return {"action": "sell_all", "reason": reason, "stop": stop}
+
+    # ── 2. Time stop ──
+    # Let it run only if genuinely doing well: up >= TIME_STOP_EXEMPT_GAIN, OR still
+    # holding near its peak (within TIME_STOP_NEAR_HIGH) AND at least +BREAKEVEN_AT.
+    # A sub-breakeven position hovering under a tiny peak is dead money — flush it.
+    strong_or_climbing = (
+        gain >= TIME_STOP_EXEMPT_GAIN
+        or (gain >= BREAKEVEN_AT and current >= high * (1 - TIME_STOP_NEAR_HIGH))
+    )
+    if days_held >= MAX_HOLD_DAYS and not strong_or_climbing:
+        return {"action": "sell_all",
+                "reason": f"Time stop: held {days_held} trading days at {gain*100:+.1f}%, not trending",
+                "stop": stop}
+
+    # ── 3. Scale-out (one time) ──
+    if gain >= SCALE_OUT_AT and not already_scaled:
+        return {"action": "scale_out",
+                "reason": f"Scale-out {SCALE_OUT_SIZE*100:.0f}% at +{SCALE_OUT_AT*100:.0f}% (banked the pop)",
+                "stop": stop}
+
+    return {"action": "hold", "reason": f"stop ${stop:.2f}", "stop": stop}
 
 
 def check_profit_targets(entry_price, current_price):

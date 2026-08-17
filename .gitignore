@@ -1,0 +1,10 @@
+.env
+config.py
+__pycache__/
+*.pyc
+*.bak*
+agent_output.log
+agent_error.log
+agent_error.log.archive_*
+triggered_profits.json
+entry_dates.json
