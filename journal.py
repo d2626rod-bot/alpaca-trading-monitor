@@ -51,10 +51,16 @@ def log_trade(symbol, side, qty, entry_price, stop_loss,
     print(f"[JOURNAL] Trade logged: {side.upper()} {qty} {symbol} @ ${entry_price:.2f}")
 
 
-def close_trade(symbol, exit_price, notes=""):
+def close_trade(symbol, exit_price, notes="", qty=None):
     """
     Update the most recent open trade for a symbol with exit price.
     Call this when you CLOSE a trade.
+
+    `qty` = the shares actually sold in THIS close. Pass it whenever the caller
+    knows the real remaining size (the agent always does). If omitted, the row's
+    recorded Qty is used. Passing it prevents double-counting: a position that was
+    scaled out earlier still has its ORIGINAL Qty on the Open row, so computing P&L
+    on that would count the already-sold shares a second time.
     """
     if not os.path.exists(JOURNAL_FILE):
         print(f"[JOURNAL] File not found: {JOURNAL_FILE}")
@@ -72,16 +78,17 @@ def close_trade(symbol, exit_price, notes=""):
         idx = df[mask].index[-1]
         entry_price = float(df.at[idx, "Entry Price ($)"])
         side        = df.at[idx, "Side"]
-        qty         = float(df.at[idx, "Qty"])
+        close_qty   = int(qty) if qty is not None else float(df.at[idx, "Qty"])
 
-        # Calculate P&L
+        # Calculate P&L on the shares actually sold in this close
         if side == "BUY":
-            pnl     = (exit_price - entry_price) * qty
+            pnl     = (exit_price - entry_price) * close_qty
             pnl_pct = (exit_price - entry_price) / entry_price * 100
         else:
-            pnl     = (entry_price - exit_price) * qty
+            pnl     = (entry_price - exit_price) * close_qty
             pnl_pct = (entry_price - exit_price) / entry_price * 100
 
+        df.at[idx, "Qty"]            = close_qty
         df.at[idx, "Exit Price ($)"] = round(exit_price, 2)
         df.at[idx, "P&L ($)"]        = round(pnl, 2)
         df.at[idx, "P&L (%)"]        = round(pnl_pct, 2)

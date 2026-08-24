@@ -517,7 +517,7 @@ def monitor_positions():
                     alert_stop_hit(symbol, current_price, decision["stop"])
                     order = place_sell_order(symbol, qty, decision["reason"], price=current_price)
                     if order:  # real fill OR the SELL_ALREADY_CLOSED sentinel (both truthy)
-                        close_trade(symbol, current_price, decision["reason"])
+                        close_trade(symbol, current_price, decision["reason"], qty=qty)
                         recent_stopouts[symbol] = datetime.now()
                         _clear_position_state(symbol)
                         save_triggered_profits()
@@ -532,7 +532,7 @@ def monitor_positions():
                     alert_profit_target(symbol, sell_qty, int(SCALE_OUT_AT * 100))
                     order = place_sell_order(symbol, sell_qty, decision["reason"], price=current_price)
                     if order == SELL_ALREADY_CLOSED:
-                        close_trade(symbol, current_price, "Position already closed at broker (reconciled)")
+                        close_trade(symbol, current_price, "Position already closed at broker (reconciled)", qty=qty)
                         recent_stopouts[symbol] = datetime.now()
                         _clear_position_state(symbol)
                         save_triggered_profits()
