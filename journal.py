@@ -173,11 +173,17 @@ def print_summary():
             return
 
         closed["P&L ($)"] = pd.to_numeric(closed["P&L ($)"], errors="coerce")
+        # Scale-out sells live in separate "Partial Close" rows — their P&L is
+        # realized too, so it must be counted in the total.
+        partial = df[df["Status"] == "Partial Close"].copy()
+        partial["P&L ($)"] = pd.to_numeric(partial["P&L ($)"], errors="coerce")
         total_trades  = len(closed)
         winners       = len(closed[closed["P&L ($)"] > 0])
         losers        = len(closed[closed["P&L ($)"] < 0])
         win_rate      = (winners / total_trades * 100) if total_trades > 0 else 0
-        total_pnl     = closed["P&L ($)"].sum()
+        closed_pnl    = closed["P&L ($)"].sum()
+        partial_pnl   = partial["P&L ($)"].sum()
+        total_pnl     = closed_pnl + partial_pnl
         best_trade    = closed["P&L ($)"].max()
         worst_trade   = closed["P&L ($)"].min()
 
@@ -187,8 +193,10 @@ def print_summary():
         print(f"  Total closed trades : {total_trades}")
         print(f"  Winners             : {winners}")
         print(f"  Losers              : {losers}")
-        print(f"  Win rate            : {win_rate:.1f}%")
-        print(f"  Total P&L           : ${total_pnl:+.2f}")
+        print(f"  Win rate            : {win_rate:.1f}% (final exits)")
+        print(f"  Closed P&L          : ${closed_pnl:+.2f}")
+        print(f"  Scale-out P&L       : ${partial_pnl:+.2f} ({len(partial)} partial sells)")
+        print(f"  Total realized P&L  : ${total_pnl:+.2f}")
         print(f"  Best trade          : ${best_trade:+.2f}")
         print(f"  Worst trade         : ${worst_trade:+.2f}")
         print("="*50 + "\n")

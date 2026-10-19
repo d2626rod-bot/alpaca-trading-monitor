@@ -208,7 +208,6 @@ WATCHLIST = [
     "CME",    # CME Group
     "ICE",    # Intercontinental Exchange
     "AON",    # Aon
-    "MMC",    # Marsh & McLennan
     "CB",     # Chubb
     "SO",     # Southern Company
     "DUK",    # Duke Energy
